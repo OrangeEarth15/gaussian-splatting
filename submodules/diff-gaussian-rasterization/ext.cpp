@@ -9,6 +9,11 @@
  * For inquiries contact  george.drettakis@inria.fr
  */
 
+// torch/extension.h 内部包含：
+// #include <torch/torch.h>        // PyTorch核心
+// #include <pybind11/pybind11.h>  // Python-C++绑定
+// #include <pybind11/stl.h>       // STL容器支持
+// #include <pybind11/functional.h> // 函数对象支持
 #include <torch/extension.h>
 #include "rasterize_points.h"
 

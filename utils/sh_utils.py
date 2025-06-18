@@ -23,8 +23,8 @@
 
 import torch
 
-C0 = 0.28209479177387814
-C1 = 0.4886025119029199
+C0 = 0.28209479177387814 # 球谐函数常数项
+C1 = 0.4886025119029199 # 球谐函数一阶项    
 C2 = [
     1.0925484305920792,
     -1.0925484305920792,
@@ -56,6 +56,13 @@ C4 = [
 
 def eval_sh(deg, sh, dirs):
     """
+    在单位方向上计算球谐函数值
+    参数：
+        deg: int SH阶数（0-3）
+        sh: jnp.ndarray SH系数 [..., C, (deg + 1) ** 2]
+        dirs: jnp.ndarray 单位方向 [..., 3]
+    返回：
+        [..., C]
     Evaluate spherical harmonics at unit directions
     using hardcoded SH polynomials.
     Works with torch/np/jnp.
@@ -112,7 +119,8 @@ def eval_sh(deg, sh, dirs):
     return result
 
 def RGB2SH(rgb):
-    return (rgb - 0.5) / C0
+    # 将RGB值从[0, 1]范围转换为[-1, 1]范围
+    return (rgb - 0.5) / C0 # 将RGB颜色转换为球谐函数系数，利用球谐函数常数项进行归一化
 
 def SH2RGB(sh):
     return sh * C0 + 0.5

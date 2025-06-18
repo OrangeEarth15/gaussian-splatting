@@ -12,6 +12,8 @@
 from typing import NamedTuple
 import torch.nn as nn
 import torch
+# from . 表示从当前包（或模块）所在的目录导入。
+# _C 是当前包中的一个模块或子模块的名字，通常是一个以 _ 开头的私有模块。
 from . import _C
 
 def cpu_deep_copy_tuple(input_tuple):

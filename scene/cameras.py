@@ -22,6 +22,10 @@ class Camera(nn.Module):
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                  train_test_exp = False, is_test_dataset = False, is_test_view = False
                  ):
+        """
+        depth_params:深度参数
+        invdepthmap:逆深度图
+        """
         super(Camera, self).__init__()
 
         self.uid = uid
@@ -39,14 +43,17 @@ class Camera(nn.Module):
             print(f"[Warning] Custom device {data_device} failed, fallback to default cuda device" )
             self.data_device = torch.device("cuda")
 
-        resized_image_rgb = PILtoTorch(image, resolution)
-        gt_image = resized_image_rgb[:3, ...]
+        resized_image_rgb = PILtoTorch(image, resolution) # 将PIL图像转为Pytorch张量的工具函数
+        gt_image = resized_image_rgb[:3, ...] # 获取RGB图像    
         self.alpha_mask = None
-        if resized_image_rgb.shape[0] == 4:
-            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device)
+        if resized_image_rgb.shape[0] == 4: # 如果图像有4个通道
+            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device) # 获取alpha通道
         else: 
-            self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device))
+            self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device)) # 如果图像只有3个通道，则创建一个全1的alpha通道
 
+        # alpha mask是一个(1, H, W)的矩阵，用于控制图像的可见区域
+        # 值为1的区域表示可见，值为0的区域表示不可见
+        # 在训练测试曝光模式下，用于分割图像的不同部分
         if train_test_exp and is_test_view:
             if is_test_dataset:
                 self.alpha_mask[..., :self.alpha_mask.shape[-1] // 2] = 0
@@ -77,8 +84,8 @@ class Camera(nn.Module):
                 self.invdepthmap = self.invdepthmap[..., 0]
             self.invdepthmap = torch.from_numpy(self.invdepthmap[None]).to(self.data_device)
 
-        self.zfar = 100.0
-        self.znear = 0.01
+        self.zfar = 100.0 # 设置远平面
+        self.znear = 0.01 # 设置近平面
 
         self.trans = trans
         self.scale = scale

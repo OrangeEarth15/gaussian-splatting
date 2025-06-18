@@ -15,12 +15,27 @@
 #include <vector>
 #include <functional>
 
+// 命名空间是CudaRasterizer
+// 命名空间里有一个Rasterizer类
+// namespace CudaRasterizer {
+// 	class Rasterizer {
+// 		public:
+// 			static void markVisible(...);
+// 			static int forward(...);
+// 			static void backward(...);
+// 		};
+// 	}
 namespace CudaRasterizer
 {
 	class Rasterizer
 	{
 	public:
-
+		// static表示不需要创建对象就能调用
+		// 不需要创建对象就能调用
+		// CudaRasterizer::Rasterizer::markVisible(...);  // 直接调用
+		// 如果不用static，需要：
+		// CudaRasterizer::Rasterizer rasterizer;
+		// rasterizer.markVisible(...);
 		static void markVisible(
 			int P,
 			float* means3D,

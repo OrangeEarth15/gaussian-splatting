@@ -18,8 +18,9 @@
 #define BLOCK_SIZE (BLOCK_X * BLOCK_Y)
 #define NUM_WARPS (BLOCK_SIZE/32)
 // Spherical harmonics coefficients
-__device__ const float SH_C0 = 0.28209479177387814f;
-__device__ const float SH_C1 = 0.4886025119029199f;
+// 球谐函数系数	
+__device__ const float SH_C0 = 0.28209479177387814f; // 0阶：常数项（环境光）
+__device__ const float SH_C1 = 0.4886025119029199f; // 1阶：第一项（漫反射）	
 __device__ const float SH_C2[] = {
 	1.0925484305920792f,
 	-1.0925484305920792f,
@@ -37,23 +38,33 @@ __device__ const float SH_C3[] = {
 	-0.5900435899266435f
 };
 
+// 将NDC坐标转换为像素坐标
+// v: NDC坐标，范围为[-1, 1]
+// S: 屏幕尺寸，最后的返回值是[0, S-1]（实际是[-0.5, S-0.5]）
 __forceinline__ __device__ float ndc2Pix(float v, int S)
 {
 	return ((v + 1.0) * S - 1.0) * 0.5;
 }
 
+// 矩阵计算函数，计算高斯点影响的tile范围
+// p: 高斯点位置
+// max_radius: 高斯点影响范围
+// rect_min: 高斯点影响的tile范围最小值
+// rect_max: 高斯点影响的tile范围最大值
+// grid: CUDA网格尺寸（tile的总数）
 __forceinline__ __device__ void getRect(const float2 p, int max_radius, uint2& rect_min, uint2& rect_max, dim3 grid)
 {
 	rect_min = {
-		min(grid.x, max((int)0, (int)((p.x - max_radius) / BLOCK_X))),
+		min(grid.x, max((int)0, (int)((p.x - max_radius) / BLOCK_X))), // max，min确保不超过网格边界
 		min(grid.y, max((int)0, (int)((p.y - max_radius) / BLOCK_Y)))
 	};
 	rect_max = {
-		min(grid.x, max((int)0, (int)((p.x + max_radius + BLOCK_X - 1) / BLOCK_X))),
+		min(grid.x, max((int)0, (int)((p.x + max_radius + BLOCK_X - 1) / BLOCK_X))), // 向上取整
 		min(grid.y, max((int)0, (int)((p.y + max_radius + BLOCK_Y - 1) / BLOCK_Y)))
 	};
 }
 
+// 重载版本：使用int2 ext_rect代替单一半径，支持椭圆形影响区域。
 __forceinline__ __device__ void getRect(const float2 p, int2 ext_rect, uint2& rect_min, uint2& rect_max, dim3 grid)
 {
 	rect_min = {
@@ -66,7 +77,13 @@ __forceinline__ __device__ void getRect(const float2 p, int2 ext_rect, uint2& re
 	};
 }
 
-
+// 将3D点通过4×4矩阵变换，但只返回前3个分量。
+// matrix数组索引：
+// [0  4  8  12]   [x]     [x']
+// [1  5  9  13] × [y]  =  [y']
+// [2  6  10 14]   [z]     [z']
+// [3  7  11 15]   [1]     [w']
+// 用途：将3D点从世界坐标系转换到相机坐标系
 __forceinline__ __device__ float3 transformPoint4x3(const float3& p, const float* matrix)
 {
 	float3 transformed = {
@@ -77,6 +94,11 @@ __forceinline__ __device__ float3 transformPoint4x3(const float3& p, const float
 	return transformed;
 }
 
+// 功能：完整的4×4矩阵变换，返回齐次坐标。
+// 关键差异：
+// 返回float4，包含w分量
+// 计算第4行：w' = m₃₀x + m₃₁y + m₃₂z + m₃₃
+// 用途：投影变换，需要w分量进行透视除法。
 __forceinline__ __device__ float4 transformPoint4x4(const float3& p, const float* matrix)
 {
 	float4 transformed = {
@@ -88,6 +110,10 @@ __forceinline__ __device__ float4 transformPoint4x4(const float3& p, const float
 	return transformed;
 }
 
+// 不包含平移分量，只使用矩阵的旋转和缩放部分
+// 变换法向量
+// 变换方向向量
+// 变换切向量
 __forceinline__ __device__ float3 transformVec4x3(const float3& p, const float* matrix)
 {
 	float3 transformed = {
@@ -108,6 +134,8 @@ __forceinline__ __device__ float3 transformVec4x3Transpose(const float3& p, cons
 	return transformed;
 }
 
+// 计算归一化操作normalize(v)对v.z的偏导数
+// 链式法则：∂n/∂vᵤ · dv = Σᵢ (∂nᵢ/∂vᵤ) · dvᵢ
 __forceinline__ __device__ float dnormvdz(float3 v, float3 dv)
 {
 	float sum2 = v.x * v.x + v.y * v.y + v.z * v.z;
@@ -128,6 +156,8 @@ __forceinline__ __device__ float3 dnormvdv(float3 v, float3 dv)
 	return dnormvdv;
 }
 
+// 计算归一化操作normalize(v)对v的偏导数
+// 针对float4类型
 __forceinline__ __device__ float4 dnormvdv(float4 v, float4 dv)
 {
 	float sum2 = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
@@ -163,6 +193,7 @@ __forceinline__ __device__ bool in_frustum(int idx,
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 	p_view = transformPoint4x3(p_orig, viewmatrix);
 
+	// 判断是否在视锥体内，不知道为什么只判断了near平面， 不判断远平面和四周
 	if (p_view.z <= 0.2f)// || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y < -1.3 || p_proj.y > 1.3)))
 	{
 		if (prefiltered)

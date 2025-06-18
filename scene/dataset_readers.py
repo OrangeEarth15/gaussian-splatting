@@ -24,26 +24,26 @@ from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 
 class CameraInfo(NamedTuple):
-    uid: int
-    R: np.array
-    T: np.array
-    FovY: np.array
-    FovX: np.array
-    depth_params: dict
-    image_path: str
-    image_name: str
-    depth_path: str
-    width: int
-    height: int
-    is_test: bool
+    uid: int       # 相机的唯一标识符
+    R: np.array    # 相机的旋转矩阵（3x3）
+    T: np.array    # 相机的平移向量（3x1）
+    FovY: np.array # 相机的垂直视场角
+    FovX: np.array # 相机的水平视场角
+    depth_params: dict # 深度相关的参数
+    image_path: str # 图像路径
+    image_name: str # 图像名称
+    depth_path: str # 深度图像路径
+    width: int # 图像宽度
+    height: int # 图像高度
+    is_test: bool # 是否为测试相机
 
 class SceneInfo(NamedTuple):
-    point_cloud: BasicPointCloud
-    train_cameras: list
-    test_cameras: list
-    nerf_normalization: dict
-    ply_path: str
-    is_nerf_synthetic: bool
+    point_cloud: BasicPointCloud # 场景的点云数据
+    train_cameras: list # 训练相机列表
+    test_cameras: list # 测试相机列表
+    nerf_normalization: dict # NeRF归一化参数
+    ply_path: str # 点云文件路径
+    is_nerf_synthetic: bool # 是否为合成数据
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -143,12 +143,23 @@ def storePly(path, xyz, rgb):
     ply_data.write(path)
 
 def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
+    """
+    读取Colmap场景信息
+    :param path: COLMAP场景的根目录路径
+    :param images: 图像目录名，默认为None
+    :param depths: 深度目录名，默认为空字符串
+    :param eval: 是否为评估模式
+    :param train_test_exp: 是否使用训练测试曝光
+    :param llffhold: LLFF数据集的分隔参数，默认为8；LLFF数据集是用于NeRF研究的一个真实场景多视角图像数据集
+    """
     try:
+        # 从二进制文件中读取相机外参和内参
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
-        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")  
         cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
     except:
+        # 如果二进制文件读取失败，尝试从文本文件中读取相机外参和内参
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
@@ -156,16 +167,20 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
 
     depth_params_file = os.path.join(path, "sparse/0", "depth_params.json")
     ## if depth_params_file isnt there AND depths file is here -> throw error
+    # 如果深度参数文件不存在且深度文件存在，则抛出错误
     depths_params = None
     if depths != "":
         try:
+            # 读取深度参数文件
             with open(depth_params_file, "r") as f:
                 depths_params = json.load(f)
+            # 计算所有尺度的中值
             all_scales = np.array([depths_params[key]["scale"] for key in depths_params])
             if (all_scales > 0).sum():
                 med_scale = np.median(all_scales[all_scales > 0])
             else:
                 med_scale = 0
+            # 为每个深度参数添加中值尺度（所有尺度中值）
             for key in depths_params:
                 depths_params[key]["med_scale"] = med_scale
 
@@ -178,13 +193,15 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
 
     if eval:
         if "360" in path:
-            llffhold = 8
+            llffhold = 8 # 如果场景是360度，则设置llffhold为8
         if llffhold:
             print("------------LLFF HOLD-------------")
+            # 按LLFF方式选择测试相机
             cam_names = [cam_extrinsics[cam_id].name for cam_id in cam_extrinsics]
             cam_names = sorted(cam_names)
             test_cam_names_list = [name for idx, name in enumerate(cam_names) if idx % llffhold == 0]
         else:
+            # 从测试文件读取测试相机
             with open(os.path.join(path, "sparse/0", "test.txt"), 'r') as file:
                 test_cam_names_list = [line.strip() for line in file]
     else:
@@ -195,11 +212,16 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
         cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=depths_params,
         images_folder=os.path.join(path, reading_dir), 
         depths_folder=os.path.join(path, depths) if depths != "" else "", test_cam_names_list=test_cam_names_list)
+    # 按图像名称排序
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
+    # 根据条件分离训练和测试相机
+    # 考虑训练测试曝光参数
     train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
     test_cam_infos = [c for c in cam_infos if c.is_test]
 
+    # 计算NeRF++归一化参数
+    # 使用训练相机信息计算归一化参数
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "sparse/0/points3D.ply")

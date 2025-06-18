@@ -9,19 +9,19 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-import os
+import os 
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim # L1损失和结构相似性损失
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state, get_expon_lr_func
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr
-from argparse import ArgumentParser, Namespace
-from arguments import ModelParams, PipelineParams, OptimizationParams
+from utils.image_utils import psnr # 峰值信噪比计算
+from argparse import ArgumentParser, Namespace # 命令行参数解析
+from arguments import ModelParams, PipelineParams, OptimizationParams # 模型参数、管道参数、优化参数
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -29,32 +29,44 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 try:
-    from fused_ssim import fused_ssim
+    from fused_ssim import fused_ssim # 加速的SSIM计算
     FUSED_SSIM_AVAILABLE = True
 except:
     FUSED_SSIM_AVAILABLE = False
 
 try:
-    from diff_gaussian_rasterization import SparseGaussianAdam
+    from diff_gaussian_rasterization import SparseGaussianAdam # 稀疏高斯Adam优化器
     SPARSE_ADAM_AVAILABLE = True
 except:
     SPARSE_ADAM_AVAILABLE = False
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+    """
+    训练过程
+    :param dataset: 模型和数据集参数
+    :param opt: 优化相关参数
+    :param pipe: 渲染管道参数
+    :param testing_iterations: 测试迭代次数
+    :param saving_iterations: 保存迭代次数
+    :param checkpoint_iterations: 检查点迭代次数
+    :param checkpoint: 检查点文件路径
+    :param debug_from: 调试开始迭代次数
+    """
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
+    # 初始化高斯模型和场景
+    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type) # 最大球谐函数阶数和优化器类型
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
     if checkpoint:
-        (model_params, first_iter) = torch.load(checkpoint)
+        (model_params, first_iter) = torch.load(checkpoint) # first_iter：加载的迭代次数
         gaussians.restore(model_params, opt)
 
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0] # 背景颜色
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     iter_start = torch.cuda.Event(enable_timing = True)
@@ -63,14 +75,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
     depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
 
+    # 2.获取训练相机列表
     viewpoint_stack = scene.getTrainCameras().copy()
-    viewpoint_indices = list(range(len(viewpoint_stack)))
+    viewpoint_indices = list(range(len(viewpoint_stack))) # 训练相机索引列表
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
+        # 不太重要的逻辑
+        # ==============================
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -85,19 +100,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     break
             except Exception as e:
                 network_gui.conn = None
-
+        # ==============================
+        # 计时开始
         iter_start.record()
 
+        # 1.更新曝光参数和位置参数学习率 && 在合适的迭代增加SH阶数
         gaussians.update_learning_rate(iteration)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
+        # 每1000次迭代增加SH阶数
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
         # Pick a random Camera
+        # 2.随机选择一个相机
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-            viewpoint_indices = list(range(len(viewpoint_stack)))
+            viewpoint_indices = list(range(len(viewpoint_stack))) 
         rand_idx = randint(0, len(viewpoint_indices) - 1)
         viewpoint_cam = viewpoint_stack.pop(rand_idx)
         vind = viewpoint_indices.pop(rand_idx)
@@ -107,8 +126,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             pipe.debug = True
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
-
+        
+        # 3.高斯点云光栅化渲染
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
+        # render_pkg = {
+        #     "image": 渲染图像,
+        #     "viewspace_points": 视图空间点,
+        #     "visibility_filter": 可见性过滤器,
+        #     "radii": 点半径
+        # }
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         if viewpoint_cam.alpha_mask is not None:
@@ -116,6 +142,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             image *= alpha_mask
 
         # Loss
+        # 4.计算损失
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         if FUSED_SSIM_AVAILABLE:
@@ -139,6 +166,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         else:
             Ll1depth = 0
 
+        # 5.反向传播
         loss.backward()
 
         iter_end.record()
@@ -190,6 +218,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
 def prepare_output_and_logger(args):    
+    """
+    准备输出和日志记录
+    :param args: 命令行参数（training中传入的是dataset）
+    """
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str=os.getenv('OAR_JOB_ID')
@@ -254,31 +286,36 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
-    lp = ModelParams(parser)
+    lp = ModelParams(parser) # 模型和数据加载相关参数
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6009)
-    parser.add_argument('--debug_from', type=int, default=-1)
-    parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--quiet", action="store_true")
-    parser.add_argument('--disable_viewer', action='store_true', default=False)
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument('--ip', type=str, default="127.0.0.1") # 服务器IP地址，默认为本地（127.0.0.1）
+    parser.add_argument('--port', type=int, default=6009) # 服务器端口，默认为6009
+    parser.add_argument('--debug_from', type=int, default=-1) # 调试开始迭代次数，默认为-1（不调试）
+    parser.add_argument('--detect_anomaly', action='store_true', default=False) # 是否检测异常，默认为False
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000]) # 测试迭代次数，默认为7000和30000
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000]) # 在那些迭代保存模型，默认为7000和30000
+    parser.add_argument("--quiet", action="store_true") # 静默模式，减少输出
+    parser.add_argument('--disable_viewer', action='store_true', default=False) # 是否禁用网络查看器
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[]) # 在哪些迭代保存检查点，默认空列表
+    parser.add_argument("--start_checkpoint", type=str, default = None) # 从哪个检查点文件开始训练，默认为None
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
     print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)
-    safe_state(args.quiet)
+    safe_state(args.quiet) # 初始化系统状态，主要是设置随机数生成器的种子；如果args.quiet为True，则减少输出信息
 
     # Start GUI server, configure and run training
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
+    # 启用或禁用PyTorch的自动微分异常检测
+    # 当args.detect_anomaly为True时，会在梯度计算出现问题时提供更详细的错误信息
+    # 有助于调试训练过程中的数值问题
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+
+    # 开始训练
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
     # All done

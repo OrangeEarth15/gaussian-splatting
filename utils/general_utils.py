@@ -19,17 +19,34 @@ def inverse_sigmoid(x):
     return torch.log(x/(1-x))
 
 def PILtoTorch(pil_image, resolution):
-    resized_image_PIL = pil_image.resize(resolution)
+    """
+    pil_image:PIL图像
+    resolution:目标分辨率，格式为(width, height)
+    """
+    resized_image_PIL = pil_image.resize(resolution) # 调整图像大小
+    # 将PIL图像转化为Numpy数组
+    # 将像素值从[0, 255]范围缩放到[0, 1]范围
     resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0
-    if len(resized_image.shape) == 3:
-        return resized_image.permute(2, 0, 1)
-    else:
+    # 将图像转换为(C, H, W)格式
+    if len(resized_image.shape) == 3: # RGB图像
+        return resized_image.permute(2, 0, 1) 
+    else: # 灰度图像
         return resized_image.unsqueeze(dim=-1).permute(2, 0, 1)
 
 def get_expon_lr_func(
     lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000
 ):
     """
+    学习率衰减函数，用于生成学习率衰减策略的函数
+    无延迟情况：
+    - 学习率从lr_init开始
+    - 按指数衰减到lr_final
+    - 变化曲线为对数线性
+    有延迟情况：
+    - 学习率从lr_init * lr_delay_mult开始
+    - 在lr_delay_steps步内平滑增加到lr_init
+    - 之后按指数衰减到lr_final
+    
     Copied from Plenoxels
 
     Continuous learning rate decay function. Adapted from JaxNeRF
@@ -50,6 +67,7 @@ def get_expon_lr_func(
             return 0.0
         if lr_delay_steps > 0:
             # A kind of reverse cosine decay.
+            # 如果设置了延迟步骤，则使用延迟学习率
             delay_rate = lr_delay_mult + (1 - lr_delay_mult) * np.sin(
                 0.5 * np.pi * np.clip(step / lr_delay_steps, 0, 1)
             )
@@ -62,6 +80,9 @@ def get_expon_lr_func(
     return helper
 
 def strip_lowerdiag(L):
+    """
+    将保存的协方差矩阵 L 转换为 uncertainty 向量，从保存3x3矩阵变为保存上三角的6个元素
+    """
     uncertainty = torch.zeros((L.shape[0], 6), dtype=torch.float, device="cuda")
 
     uncertainty[:, 0] = L[:, 0, 0]
@@ -76,6 +97,11 @@ def strip_symmetric(sym):
     return strip_lowerdiag(sym)
 
 def build_rotation(r):
+    # 由四元数构建旋转矩阵
+    # R = [1 - 2(y^2 + z^2), 2(xy - rz), 2(xz + ry)]
+    #    [2(xy + rz), 1 - 2(x^2 + z^2), 2(yz - rx)]
+    #    [2(xz - ry), 2(yz + rx), 1 - 2(x^2 + y^2)]
+    # 归一化四元数
     norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
 
     q = r / norm[:, None]
@@ -99,6 +125,7 @@ def build_rotation(r):
     return R
 
 def build_scaling_rotation(s, r):
+    # 构建缩放矩阵和旋转矩阵
     L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
     R = build_rotation(r)
 

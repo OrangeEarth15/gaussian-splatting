@@ -24,5 +24,10 @@ def mkdir_p(folder_path):
             raise
 
 def searchForMaxIteration(folder):
+    """
+    搜索文件夹中最大的迭代次数
+    :param folder: 文件夹路径
+    :return: 最大的迭代次数
+    """
     saved_iters = [int(fname.split("_")[-1]) for fname in os.listdir(folder)]
     return max(saved_iters)

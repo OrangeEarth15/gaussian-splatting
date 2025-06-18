@@ -206,9 +206,9 @@ def read_extrinsics_binary(path_to_model_file):
                                    tuple(map(float, x_y_id_s[1::3]))])
             point3D_ids = np.array(tuple(map(int, x_y_id_s[2::3])))
             images[image_id] = Image(
-                id=image_id, qvec=qvec, tvec=tvec,
-                camera_id=camera_id, name=image_name,
-                xys=xys, point3D_ids=point3D_ids)
+                id=image_id, qvec=qvec, tvec=tvec, # 图像ID，旋转四元数，平移向量   
+                camera_id=camera_id, name=image_name, # 相机ID，图像名称
+                xys=xys, point3D_ids=point3D_ids) # 2D点坐标，3D点ID
     return images
 
 
@@ -232,11 +232,11 @@ def read_intrinsics_binary(path_to_model_file):
             num_params = CAMERA_MODEL_IDS[model_id].num_params
             params = read_next_bytes(fid, num_bytes=8*num_params,
                                      format_char_sequence="d"*num_params)
-            cameras[camera_id] = Camera(id=camera_id,
-                                        model=model_name,
-                                        width=width,
-                                        height=height,
-                                        params=np.array(params))
+            cameras[camera_id] = Camera(id=camera_id, # 相机ID
+                                        model=model_name, # 相机模型名称
+                                        width=width, # 图像宽度
+                                        height=height, # 图像高度
+                                        params=np.array(params)) # 相机参数
         assert len(cameras) == num_cameras
     return cameras
 

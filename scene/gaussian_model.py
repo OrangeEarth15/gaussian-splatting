@@ -16,9 +16,9 @@ from torch import nn
 import os
 import json
 from utils.system_utils import mkdir_p
-from plyfile import PlyData, PlyElement
+from plyfile import PlyData, PlyElement # ply文件处理
 from utils.sh_utils import RGB2SH
-from simple_knn._C import distCUDA2
+from simple_knn._C import distCUDA2 # CUDA距离计算
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
@@ -32,37 +32,37 @@ class GaussianModel:
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)
-            actual_covariance = L @ L.transpose(1, 2)
-            symm = strip_symmetric(actual_covariance)
+            actual_covariance = L @ L.transpose(1, 2) # 协方差矩阵 Sigma = R S S^T R^T
+            symm = strip_symmetric(actual_covariance) # 利用对称性只保存上三角的六个元素
             return symm
         
-        self.scaling_activation = torch.exp
+        self.scaling_activation = torch.exp # 缩放激活函数，exp(x)，保证为正
         self.scaling_inverse_activation = torch.log
 
         self.covariance_activation = build_covariance_from_scaling_rotation
 
-        self.opacity_activation = torch.sigmoid
+        self.opacity_activation = torch.sigmoid # 不透明度激活函数，sigmoid(x)，保证为0-1
         self.inverse_opacity_activation = inverse_sigmoid
 
-        self.rotation_activation = torch.nn.functional.normalize
+        self.rotation_activation = torch.nn.functional.normalize # 旋转激活函数，归一化四元数
 
 
     def __init__(self, sh_degree, optimizer_type="default"):
-        self.active_sh_degree = 0
-        self.optimizer_type = optimizer_type
-        self.max_sh_degree = sh_degree  
-        self._xyz = torch.empty(0)
-        self._features_dc = torch.empty(0)
-        self._features_rest = torch.empty(0)
-        self._scaling = torch.empty(0)
-        self._rotation = torch.empty(0)
-        self._opacity = torch.empty(0)
-        self.max_radii2D = torch.empty(0)
-        self.xyz_gradient_accum = torch.empty(0)
-        self.denom = torch.empty(0)
+        self.active_sh_degree = 0 # 当前活跃的球谐函数阶数
+        self.optimizer_type = optimizer_type # 优化器类型
+        self.max_sh_degree = sh_degree # 最大球谐函数阶数
+        self._xyz = torch.empty(0) # 点云数据
+        self._features_dc = torch.empty(0) # 球谐函数的DC分量（0阶）
+        self._features_rest = torch.empty(0) # 球谐函数的其它分量（1阶及以上）
+        self._scaling = torch.empty(0) # 缩放因子
+        self._rotation = torch.empty(0) # 旋转参数，四元数
+        self._opacity = torch.empty(0) # 不透明度
+        self.max_radii2D = torch.empty(0) # 2D投影的最大半径
+        self.xyz_gradient_accum = torch.empty(0) # 位置梯度累积
+        self.denom = torch.empty(0) # 梯度累积的分母
         self.optimizer = None
-        self.percent_dense = 0
-        self.spatial_lr_scale = 0
+        self.percent_dense = 0 # 密度
+        self.spatial_lr_scale = 0 # 空间学习率缩放  
         self.setup_functions()
 
     def capture(self):
@@ -82,6 +82,7 @@ class GaussianModel:
         )
     
     def restore(self, model_args, training_args):
+        # 1.首先恢复模型基本参数
         (self.active_sh_degree, 
         self._xyz, 
         self._features_dc, 
@@ -94,8 +95,10 @@ class GaussianModel:
         denom,
         opt_dict, 
         self.spatial_lr_scale) = model_args
+        # 2.调用training_setup初始化训练所需的统计变量：优化器和学习率调度策略  
         self.training_setup(training_args)
-        self.xyz_gradient_accum = xyz_gradient_accum
+        # 3.恢复训练状态所需的统计变量
+        self.xyz_gradient_accum = xyz_gradient_accum 
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
 
@@ -147,20 +150,30 @@ class GaussianModel:
             self.active_sh_degree += 1
 
     def create_from_pcd(self, pcd : BasicPointCloud, cam_infos : int, spatial_lr_scale : float):
+        """
+        从点云数据初始化模型
+        :param pcd: 点云数据
+        :param cam_infos: 相机信息
+        :param spatial_lr_scale: 空间学习率缩放因子
+        """
         self.spatial_lr_scale = spatial_lr_scale
-        fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda() # 将点云位置转换为CUDA张量
+        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda()) # 将RGB颜色转换为球谐函数系数
+        # 初始化球谐函数系数
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
         features[:, 3:, 1:] = 0.0
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
+        # 计算点云中的每个点到其他点的最小距离
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+        # 使用距离的对数作为缩放因子，因为激活函数是exp
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        # 初始化旋转参数，四元数，默认是[1, 0, 0, 0]，无旋转
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
-
+        # 初始化所有点的不透明度为0.1
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
@@ -170,12 +183,20 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        # 创建相机名称到相机索引的映射
         self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
         self.pretrained_exposures = None
+        # 初始化曝光参数，单位矩阵
         exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
         self._exposure = nn.Parameter(exposure.requires_grad_(True))
 
     def training_setup(self, training_args):
+        """
+        1.初始化训练所需的统计变量
+        2.设置不同参数组的优化器
+        3.配置学习率调度策略
+        4.设置曝光参数的优化器
+        """
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -213,16 +234,22 @@ class GaussianModel:
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
         if self.pretrained_exposures is None:
+            # 如果没有预训练曝光的参数，则使用曝光学习率调度策略
+            # 使用专门的优化器（exposure_optimizer）
+            # 使用专门的调度器（exposure_scheduler_args）
             for param_group in self.exposure_optimizer.param_groups:
                 param_group['lr'] = self.exposure_scheduler_args(iteration)
 
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
+                # 位置参数学习率更新
                 lr = self.xyz_scheduler_args(iteration)
                 param_group['lr'] = lr
                 return lr
 
     def construct_list_of_attributes(self):
+        # x, y, z：3D位置坐标
+        # nx, ny, nz：3D法向量
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
         # All channels except the 3 DC
         for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
@@ -314,6 +341,9 @@ class GaussianModel:
         self.active_sh_degree = self.max_sh_degree
 
     def replace_tensor_to_optimizer(self, tensor, name):
+        """
+        用于替换优化器中的特性参数
+        """
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == name:

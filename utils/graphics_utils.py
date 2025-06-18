@@ -15,9 +15,9 @@ import numpy as np
 from typing import NamedTuple
 
 class BasicPointCloud(NamedTuple):
-    points : np.array
-    colors : np.array
-    normals : np.array
+    points : np.array # 点云中点的坐标
+    colors : np.array # 点云中点的颜色
+    normals : np.array # 点云中点的法向量
 
 def geom_transform_points(points, transf_matrix):
     P, _ = points.shape

@@ -23,15 +23,21 @@ class Scene:
     gaussians : GaussianModel
 
     def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
-        """b
-        :param path: Path to colmap scene main folder.
         """
-        self.model_path = args.model_path
-        self.loaded_iter = None
-        self.gaussians = gaussians
+        初始化场景
+        :param args: 模型和数据加载相关参数，包含场景路径、图像路径等配置
+        :param gaussians: 高斯模型实例
+        :param load_iteration: 加载的迭代次数，默认为None
+        :param shuffle: 是否打乱训练和测试相机，默认为True
+        :param resolution_scales: 分辨率缩放列表，默认为[1.0]
+        """
+        self.model_path = args.model_path # 设置模型保存路径
+        self.loaded_iter = None # 初始化加载的迭代次数为None
+        self.gaussians = gaussians # 保存高斯模型实例
 
         if load_iteration:
             if load_iteration == -1:
+                # 如果load_iteration为-1，查找模型路径下所有点云文件，并返回最大迭代次数
                 self.loaded_iter = searchForMaxIteration(os.path.join(self.model_path, "point_cloud"))
             else:
                 self.loaded_iter = load_iteration
@@ -40,6 +46,7 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
 
+        # 支持两种场景类型：Colmap和Blender，根据场景类型调用相应的加载回调函数
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
@@ -48,9 +55,12 @@ class Scene:
         else:
             assert False, "Could not recognize scene type!"
 
+        # 对于新场景，复制点云文件并保存相机信息
         if not self.loaded_iter:
+            # 复制点云文件
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
                 dest_file.write(src_file.read())
+            # 保存相机信息
             json_cams = []
             camlist = []
             if scene_info.test_cameras:
